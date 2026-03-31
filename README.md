@@ -1,1 +1,20 @@
-# lc-admin-frontend
+# LC Admin Frontend
+
+React admin panel for Legacy Cards.
+
+## Quick start
+
+```bash
+npm install
+cp .env.example .env
+npm run dev
+```
+
+## URL
+
+- `http://localhost:5173`
+
+## Required
+
+- Backend admin API running
+- Header token `X-Admin-Token` configured in backend
