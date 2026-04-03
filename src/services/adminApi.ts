@@ -1,11 +1,13 @@
 import type {
   AnalyticsSummaryResponse,
+  CardLookupResponse,
+  CardMetadataOptionsResponse,
   StoreDeleteResponse,
   StoreProduct,
   StoreProductListResponse,
 } from "../types/store";
 
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8001";
 
 function adminHeaders(token: string): HeadersInit {
   return {
@@ -86,4 +88,33 @@ export async function fetchAdminAnalyticsSummary(
   }
 
   return (await response.json()) as AnalyticsSummaryResponse;
+}
+
+export async function fetchCardMetadataOptions(token: string): Promise<CardMetadataOptionsResponse> {
+  const response = await fetch(`${API_URL}/api/v1/admin/cards/options`, {
+    headers: adminHeaders(token),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Falha ao carregar opcoes de cartas (${response.status})`);
+  }
+
+  return (await response.json()) as CardMetadataOptionsResponse;
+}
+
+export async function fetchCardLookup(
+  token: string,
+  query: string,
+  limit = 12,
+): Promise<CardLookupResponse> {
+  const params = new URLSearchParams({ query, limit: String(limit) });
+  const response = await fetch(`${API_URL}/api/v1/admin/cards/lookup?${params.toString()}`, {
+    headers: adminHeaders(token),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Falha ao buscar carta (${response.status})`);
+  }
+
+  return (await response.json()) as CardLookupResponse;
 }
