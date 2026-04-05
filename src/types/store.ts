@@ -5,6 +5,7 @@ export type StoreProduct = {
   set_name?: string | null;
   set_series?: string | null;
   rarity?: string | null;
+  finish?: string | null;
   condition?: string | null;
   card_number?: string | null;
   regulation_mark?: string | null;
@@ -19,6 +20,7 @@ export type StoreProduct = {
   stock: number;
   price_brl: number;
   image_url: string;
+  image_gallery: string[];
   is_special: boolean;
 };
 
@@ -57,6 +59,12 @@ export type CardLookupItem = {
   rarity?: string | null;
   image_small?: string | null;
   image_large?: string | null;
+  suggested_price_usd?: number | null;
+  suggested_price_brl?: number | null;
+  suggested_price_currency?: string | null;
+  suggested_price_source?: string | null;
+  suggested_finish?: string | null;
+  usd_brl_rate?: number | null;
   pokemon_generation?: string | null;
 };
 
@@ -71,6 +79,7 @@ export type CardMetadataOptionsResponse = {
   rarity_options: string[];
   set_name_options: string[];
   set_series_options: string[];
+  finish_options: string[];
   condition_options: string[];
   year_options: number[];
   generation_options: string[];

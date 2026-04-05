@@ -29,9 +29,11 @@ type ProductDraft = {
   stock: string;
   price_brl: string;
   image_url: string;
+  image_gallery: string;
   set_name: string;
   set_series: string;
   rarity: string;
+  finish: string;
   condition: string;
   card_number: string;
   regulation_mark: string;
@@ -43,6 +45,14 @@ type ProductDraft = {
   booster_pack_count: string;
   season_tags: string;
   is_special: boolean;
+};
+
+type PriceSuggestion = {
+  usd: number | null;
+  brl: number | null;
+  currency: string | null;
+  source: string | null;
+  usdToBrlRate: number | null;
 };
 
 type CategoryGroup = {
@@ -90,6 +100,16 @@ const DEFAULT_CONDITION_OPTIONS = [
   "Damaged (DMG)",
 ];
 
+const DEFAULT_FINISH_OPTIONS = [
+  "Normal",
+  "Holo (Holofoil)",
+  "Reverse Holo (Reverse Foil)",
+  "Poke Ball Reverse Holo",
+  "Master Ball Reverse Holo",
+  "Mirror Foil",
+  "Full Art",
+];
+
 const DEFAULT_GENERATION_OPTIONS = [
   "generation-i",
   "generation-ii",
@@ -123,11 +143,13 @@ function emptyDraft(tab: AdminTab): ProductDraft {
       product_type: "single_card",
       category: "Cartas avulsas",
       stock: "1",
-      price_brl: "0",
+      price_brl: "0,00",
       image_url: "",
+      image_gallery: "",
       set_name: "",
       set_series: "",
       rarity: "",
+      finish: "Normal",
       condition: "Near Mint (NM)",
       card_number: "",
       regulation_mark: "",
@@ -148,11 +170,13 @@ function emptyDraft(tab: AdminTab): ProductDraft {
     product_type: "booster",
     category: "Booster",
     stock: "1",
-    price_brl: "0",
+    price_brl: "0,00",
     image_url: "",
+    image_gallery: "",
     set_name: "",
     set_series: "",
     rarity: "",
+    finish: "",
     condition: "",
     card_number: "",
     regulation_mark: "",
@@ -174,12 +198,14 @@ function toDraft(product: StoreProduct): ProductDraft {
     product_type: product.product_type,
     category: normalizeCategory(product.category),
     stock: String(product.stock),
-    price_brl: String(product.price_brl),
+    price_brl: formatBrlFromNumber(product.price_brl),
     image_url: product.image_url,
+    image_gallery: (product.image_gallery ?? []).join("\n"),
     set_name: product.set_name ?? "",
     set_series: product.set_series ?? "",
     rarity: product.rarity ?? "",
-    condition: product.condition ?? "",
+    finish: product.finish ?? (isCardType(product.product_type) ? "Normal" : ""),
+    condition: product.condition ?? (isCardType(product.product_type) ? "Near Mint (NM)" : ""),
     card_number: product.card_number ?? "",
     regulation_mark: product.regulation_mark ?? "",
     set_code: product.set_code ?? "",
@@ -205,6 +231,55 @@ function parseOptionalInt(value: string): number | null {
   return numeric;
 }
 
+function parseImageGallery(value: string, primaryImageUrl: string): string[] {
+  const primary = primaryImageUrl.trim();
+  const seen = new Set<string>();
+  const items: string[] = [];
+
+  value
+    .split(/[\n,]/g)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .forEach((item) => {
+      if (item === primary || seen.has(item)) {
+        return;
+      }
+      seen.add(item);
+      items.push(item);
+    });
+
+  return items;
+}
+
+function formatBrlFromNumber(value: number): string {
+  const safe = Number.isFinite(value) ? value : 0;
+  return new Intl.NumberFormat("pt-BR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(safe);
+}
+
+function formatBrlInputMask(value: string): string {
+  const digits = value.replace(/\D/g, "");
+  if (!digits) {
+    return "";
+  }
+
+  const cents = Number(digits) / 100;
+  return formatBrlFromNumber(cents);
+}
+
+function parseBrlToNumber(value: string): number {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return 0;
+  }
+
+  const normalized = trimmed.replace(/\./g, "").replace(",", ".");
+  const numeric = Number(normalized);
+  return Number.isFinite(numeric) ? numeric : Number.NaN;
+}
+
 function toProduct(draft: ProductDraft): StoreProduct {
   return {
     slug: draft.slug.trim(),
@@ -212,11 +287,13 @@ function toProduct(draft: ProductDraft): StoreProduct {
     product_type: draft.product_type.trim(),
     category: normalizeCategory(draft.category),
     stock: Number(draft.stock || "0"),
-    price_brl: Number(draft.price_brl || "0"),
+    price_brl: parseBrlToNumber(draft.price_brl),
     image_url: draft.image_url.trim(),
+    image_gallery: parseImageGallery(draft.image_gallery, draft.image_url),
     set_name: draft.set_name.trim() || null,
     set_series: draft.set_series.trim() || null,
     rarity: draft.rarity.trim() || null,
+    finish: draft.finish.trim() || null,
     condition: draft.condition.trim() || null,
     card_number: draft.card_number.trim() || null,
     regulation_mark: draft.regulation_mark.trim().toUpperCase() || null,
@@ -238,12 +315,34 @@ function formatCurrency(value: number): string {
   return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
 }
 
+function formatUsd(value: number): string {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(value);
+}
+
 function slugify(value: string): string {
   return value
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 80);
+}
+
+function formatCardLookupQueryInput(value: string): string {
+  const compact = value.replace(/\s+/g, "");
+  if (!compact) {
+    return "";
+  }
+
+  if (!/^\d*\/?\d*$/.test(compact)) {
+    return value;
+  }
+
+  const digits = compact.replace(/\D/g, "").slice(0, 12);
+  if (digits.length <= 3) {
+    return digits;
+  }
+
+  return `${digits.slice(0, 3)}/${digits.slice(3)}`;
 }
 
 function normalizedIdentity(value: string | null | undefined): string {
@@ -257,6 +356,7 @@ function cardIdentityKey(product: StoreProduct): string {
     normalizedIdentity(product.set_name),
     normalizedIdentity(product.set_series),
     normalizedIdentity(product.rarity),
+    normalizedIdentity(product.finish),
     normalizedIdentity(product.condition),
     normalizedIdentity(product.regulation_mark),
     normalizedIdentity(product.set_code),
@@ -291,6 +391,42 @@ function uniqueNumbers(...groups: number[][]): number[] {
   return [...values].sort((left, right) => right - left);
 }
 
+function resolveSlugCollisionForCreate(payload: StoreProduct, existingProducts: StoreProduct[]): string {
+  const baseSlug = payload.slug.trim();
+  if (!baseSlug) {
+    return baseSlug;
+  }
+
+  const existingSlugs = new Set(existingProducts.map((item) => item.slug));
+  if (!existingSlugs.has(baseSlug)) {
+    return baseSlug;
+  }
+
+  const existingSameSlug = existingProducts.find((item) => item.slug === baseSlug);
+  if (existingSameSlug && cardIdentityKey(existingSameSlug) === cardIdentityKey(payload)) {
+    return baseSlug;
+  }
+
+  const suffixSeed =
+    payload.finish?.trim() ||
+    payload.condition?.trim() ||
+    payload.language?.trim() ||
+    "variante";
+  let candidateBase = slugify(`${baseSlug}-${suffixSeed}`);
+  if (!candidateBase) {
+    candidateBase = `${baseSlug}-variante`;
+  }
+
+  let candidate = candidateBase;
+  let index = 2;
+  while (existingSlugs.has(candidate)) {
+    candidate = `${candidateBase}-${index}`;
+    index += 1;
+  }
+
+  return candidate;
+}
+
 function App() {
   const [tokenInput, setTokenInput] = useState(
     () => localStorage.getItem(TOKEN_STORAGE_KEY) ?? DEFAULT_ADMIN_TOKEN,
@@ -314,6 +450,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [editingSlug, setEditingSlug] = useState<string | null>(null);
   const [draft, setDraft] = useState<ProductDraft>(() => emptyDraft("cards"));
+  const [suggestedPrice, setSuggestedPrice] = useState<PriceSuggestion | null>(null);
   const [duplicatePrompt, setDuplicatePrompt] = useState<DuplicatePrompt | null>(null);
   const [duplicateActionLoading, setDuplicateActionLoading] = useState(false);
 
@@ -405,6 +542,7 @@ function App() {
     setCardLookupItems([]);
     setCardLookupError(null);
     setCardLookupQuery("");
+    setSuggestedPrice(null);
     setDuplicatePrompt(null);
 
     setDraft((current) => {
@@ -413,6 +551,8 @@ function App() {
           ...current,
           product_type: "single_card",
           category: current.category || "Cartas avulsas",
+          finish: current.finish || "Normal",
+          condition: current.condition || "Near Mint (NM)",
         };
       }
 
@@ -529,6 +669,16 @@ function App() {
     [cardOptions, cardsFromStore, draft.rarity],
   );
 
+  const finishOptions = useMemo(
+    () =>
+      uniqueStrings(
+        cardOptions?.finish_options ?? DEFAULT_FINISH_OPTIONS,
+        cardsFromStore.map((product) => product.finish ?? ""),
+        [draft.finish],
+      ),
+    [cardOptions, cardsFromStore, draft.finish],
+  );
+
   const conditionOptions = useMemo(
     () =>
       uniqueStrings(
@@ -590,6 +740,11 @@ function App() {
     return [...base, { value: draft.product_type, label: `Custom (${draft.product_type})` }];
   }, [activeTab, draft.product_type]);
 
+  const previewGallery = useMemo(
+    () => parseImageGallery(draft.image_gallery, draft.image_url),
+    [draft.image_gallery, draft.image_url],
+  );
+
   function connectToken() {
     const sanitized = tokenInput.trim();
     setAdminToken(sanitized);
@@ -607,6 +762,7 @@ function App() {
     setCardLookupItems([]);
     setCardLookupError(null);
     setCardLookupQuery("");
+    setSuggestedPrice(null);
     setDuplicatePrompt(null);
   }
 
@@ -615,6 +771,7 @@ function App() {
     setActiveTab(tab);
     setEditingSlug(product.slug);
     setDraft(toDraft(product));
+    setSuggestedPrice(null);
   }
 
   async function saveProduct(event: FormEvent<HTMLFormElement>) {
@@ -667,6 +824,13 @@ function App() {
       }
     }
 
+    if (!editingSlug) {
+      const resolvedSlug = resolveSlugCollisionForCreate(payload, products);
+      if (resolvedSlug !== payload.slug) {
+        payload.slug = resolvedSlug;
+      }
+    }
+
     try {
       const saved = editingSlug
         ? await updateAdminProduct(adminToken, editingSlug, payload)
@@ -677,7 +841,11 @@ function App() {
         return [...without, saved].sort((left, right) => left.slug.localeCompare(right.slug));
       });
 
-      setStatus(editingSlug ? "Produto atualizado." : "Produto criado.");
+      if (!editingSlug && payload.slug !== draft.slug.trim()) {
+        setStatus(`Produto criado com slug ajustado para evitar colisão: ${payload.slug}.`);
+      } else {
+        setStatus(editingSlug ? "Produto atualizado." : "Produto criado.");
+      }
       resetForm();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Falha ao salvar produto.");
@@ -708,6 +876,7 @@ function App() {
       return;
     }
 
+    setStatus(null);
     const queryText = cardLookupQuery.trim();
     if (!queryText) {
       setCardLookupError("Digite um termo para buscar, ex: 031/094 ou Charizard.");
@@ -723,7 +892,12 @@ function App() {
       setCardLookupItems(response.items);
       if (response.items.length === 0) {
         setCardLookupError("Nenhuma carta encontrada para esse termo.");
+        return;
       }
+
+      const first = response.items[0];
+      applyLookupCard(first);
+      setStatus(`Carta aplicada automaticamente: ${first.name}.`);
     } catch (err: unknown) {
       setCardLookupItems([]);
       setCardLookupError(err instanceof Error ? err.message : "Falha ao buscar cartas.");
@@ -735,6 +909,18 @@ function App() {
   function applyLookupCard(item: CardLookupItem) {
     const imageUrl = item.image_large ?? item.image_small ?? "";
     const generatedSlug = slugify(`${item.name}-${item.set_id}-${item.number.replace(/\//g, "-")}`);
+    const galleryCandidates = [item.image_large, item.image_small]
+      .map((value) => (value ?? "").trim())
+      .filter((value) => Boolean(value) && value !== imageUrl) as string[];
+    const galleryFromLookup = [...new Set(galleryCandidates)];
+
+    setSuggestedPrice({
+      usd: item.suggested_price_usd ?? null,
+      brl: item.suggested_price_brl ?? null,
+      currency: item.suggested_price_currency ?? null,
+      source: item.suggested_price_source ?? null,
+      usdToBrlRate: item.usd_brl_rate ?? null,
+    });
 
     setDraft((current) => ({
       ...current,
@@ -742,15 +928,23 @@ function App() {
       slug: current.slug || generatedSlug,
       name: item.name,
       image_url: imageUrl || current.image_url,
+      image_gallery:
+        current.image_gallery.trim() ||
+        (galleryFromLookup.length > 0 ? galleryFromLookup.join("\n") : ""),
       card_number: item.local_number ?? item.number,
       set_name: item.set_name,
       set_code: (item.set_code ?? item.set_id).toUpperCase(),
       set_series: item.set_series ?? current.set_series,
       rarity: item.rarity ?? current.rarity,
+      finish: item.suggested_finish ?? current.finish,
       release_year: item.release_year ? String(item.release_year) : current.release_year,
       pokemon_generation: item.pokemon_generation ?? current.pokemon_generation,
       language: current.language || "PT",
       category: current.category || "Cartas avulsas",
+      price_brl:
+        item.suggested_price_brl != null && parseBrlToNumber(current.price_brl || "0") <= 0
+          ? formatBrlFromNumber(item.suggested_price_brl)
+          : current.price_brl,
     }));
   }
 
@@ -901,7 +1095,7 @@ function App() {
                     <input
                       value={cardLookupQuery}
                       placeholder="Ex: 031/094 ou Charizard"
-                      onChange={(event) => setCardLookupQuery(event.target.value)}
+                      onChange={(event) => setCardLookupQuery(formatCardLookupQueryInput(event.target.value))}
                     />
                     <button type="button" disabled={cardLookupLoading} onClick={() => { void searchCards(); }}>
                       {cardLookupLoading ? "Buscando..." : "Buscar"}
@@ -929,6 +1123,18 @@ function App() {
                               {item.rarity ?? "Sem raridade"}
                               {item.release_year ? ` - ${item.release_year}` : ""}
                             </p>
+                            {item.suggested_finish && <p>Acabamento: {item.suggested_finish}</p>}
+                            {(item.suggested_price_brl != null || item.suggested_price_usd != null) && (
+                              <p className="lookup-price-hint">
+                                Preco sugerido:{" "}
+                                {item.suggested_price_brl != null
+                                  ? `${formatCurrency(item.suggested_price_brl)}`
+                                  : "N/A"}
+                                {item.suggested_price_usd != null
+                                  ? ` (${formatUsd(item.suggested_price_usd)})`
+                                  : ""}
+                              </p>
+                            )}
                           </div>
                           <button type="button" onClick={() => applyLookupCard(item)}>
                             Usar dados
@@ -1009,15 +1215,47 @@ function App() {
                 <label className="admin-field">
                   <span>Preco (BRL)</span>
                   <input
-                    type="number"
-                    min="0"
-                    step="0.01"
+                    type="text"
+                    inputMode="numeric"
                     value={draft.price_brl}
-                    placeholder="price_brl"
+                    placeholder="0,00"
                     onChange={(event) =>
-                      setDraft((current) => ({ ...current, price_brl: event.target.value }))
+                      setDraft((current) => ({
+                        ...current,
+                        price_brl: formatBrlInputMask(event.target.value),
+                      }))
                     }
                   />
+                  {activeTab === "cards" && suggestedPrice && (
+                    <div className="admin-suggested-price">
+                      <p>
+                        Sugerido:{" "}
+                        {suggestedPrice.brl != null ? formatCurrency(suggestedPrice.brl) : "N/A"}
+                        {suggestedPrice.usd != null ? ` (${formatUsd(suggestedPrice.usd)})` : ""}
+                      </p>
+                      {suggestedPrice.source && <p>Fonte: {suggestedPrice.source}</p>}
+                      {suggestedPrice.usdToBrlRate != null && (
+                        <p>Cotacao USD/BRL: {suggestedPrice.usdToBrlRate.toFixed(4)}</p>
+                      )}
+                      {suggestedPrice.brl != null && (
+                        <button
+                          type="button"
+                          className="admin-inline-apply"
+                          onClick={() =>
+                            setDraft((current) => ({
+                              ...current,
+                              price_brl:
+                                suggestedPrice.brl != null
+                                  ? formatBrlFromNumber(suggestedPrice.brl)
+                                  : current.price_brl,
+                            }))
+                          }
+                        >
+                          Aplicar preco sugerido
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </label>
 
                 <label className="admin-field admin-field-full">
@@ -1027,6 +1265,18 @@ function App() {
                     placeholder="image_url"
                     onChange={(event) =>
                       setDraft((current) => ({ ...current, image_url: event.target.value }))
+                    }
+                  />
+                </label>
+
+                <label className="admin-field admin-field-full">
+                  <span>Fotos adicionais (opcional)</span>
+                  <textarea
+                    value={draft.image_gallery}
+                    placeholder="https://.../foto2.png&#10;https://.../foto3.png"
+                    rows={3}
+                    onChange={(event) =>
+                      setDraft((current) => ({ ...current, image_gallery: event.target.value }))
                     }
                   />
                 </label>
@@ -1046,14 +1296,23 @@ function App() {
 
                     <label className="admin-field">
                       <span>Marcador (regra)</span>
-                      <input
-                        list="regulation-mark-options"
-                        value={draft.regulation_mark}
-                        placeholder="H"
+                      <select
+                        value={draft.regulation_mark || "__none"}
                         onChange={(event) =>
-                          setDraft((current) => ({ ...current, regulation_mark: event.target.value.toUpperCase() }))
+                          setDraft((current) => ({
+                            ...current,
+                            regulation_mark:
+                              event.target.value === "__none" ? "" : event.target.value.toUpperCase(),
+                          }))
                         }
-                      />
+                      >
+                        <option value="__none">Sem marcador</option>
+                        {regulationMarkOptions.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
                     </label>
 
                     <label className="admin-field">
@@ -1128,15 +1387,35 @@ function App() {
                     </label>
 
                     <label className="admin-field">
+                      <span>Acabamento</span>
+                      <select
+                        value={draft.finish}
+                        onChange={(event) =>
+                          setDraft((current) => ({ ...current, finish: event.target.value }))
+                        }
+                      >
+                        {finishOptions.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label className="admin-field">
                       <span>Condicao</span>
-                      <input
-                        list="condition-options"
+                      <select
                         value={draft.condition}
-                        placeholder="Near Mint (NM)"
                         onChange={(event) =>
                           setDraft((current) => ({ ...current, condition: event.target.value }))
                         }
-                      />
+                      >
+                        {conditionOptions.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
                     </label>
 
                     <label className="admin-field admin-field-full">
@@ -1200,6 +1479,21 @@ function App() {
                 ) : (
                   <span>Adicione uma URL para visualizar a foto.</span>
                 )}
+                {previewGallery.length > 0 && (
+                  <>
+                    <p>Fotos adicionais ({previewGallery.length})</p>
+                    <div className="admin-gallery-preview-grid">
+                      {previewGallery.map((imageUrl) => (
+                        <img
+                          key={imageUrl}
+                          src={imageUrl}
+                          alt={draft.name || "foto adicional"}
+                          loading="lazy"
+                        />
+                      ))}
+                    </div>
+                  </>
+                )}
               </div>
 
               <label className="admin-checkbox">
@@ -1240,6 +1534,12 @@ function App() {
 
               <datalist id="rarity-options">
                 {rarityOptions.map((item) => (
+                  <option key={item} value={item} />
+                ))}
+              </datalist>
+
+              <datalist id="finish-options">
+                {finishOptions.map((item) => (
                   <option key={item} value={item} />
                 ))}
               </datalist>
@@ -1338,8 +1638,9 @@ function App() {
                                   {product.set_name ? ` - ${product.set_name}` : ""}
                                   {product.release_year ? ` - ${product.release_year}` : ""}
                                 </p>
+                                {product.finish && <p>{product.finish}</p>}
                                 <p>
-                                  {(product.regulation_mark ?? "-").toUpperCase()} |{" "}
+                                  {(product.regulation_mark ?? "-").toUpperCase()} -{" "}
                                   {(product.set_code ?? "---").toUpperCase()} {(product.language ?? "PT").toUpperCase()}
                                 </p>
                               </>
@@ -1352,6 +1653,9 @@ function App() {
                             <p>
                               Estoque: {product.stock} - {formatCurrency(product.price_brl)}
                             </p>
+                            {(product.image_gallery?.length ?? 0) > 0 && (
+                              <p>Fotos extras: {product.image_gallery.length}</p>
+                            )}
                           </div>
                           <div className="admin-row-actions">
                             <button type="button" onClick={() => beginEdit(product)}>
