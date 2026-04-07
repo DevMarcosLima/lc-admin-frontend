@@ -1,18 +1,21 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
 
 import {
   createAdminProduct,
   deleteAdminProduct,
   fetchAdminAnalyticsSummary,
+  fetchLotImportStatus,
   fetchAdminProducts,
   fetchCardLookup,
   fetchCardMetadataOptions,
+  startLotImport,
   updateAdminProduct,
 } from "./services/adminApi";
 import type {
   AnalyticsSummaryItem,
   CardLookupItem,
   CardMetadataOptionsResponse,
+  LotImportJobResponse,
   StoreProduct,
 } from "./types/store";
 
@@ -64,6 +67,8 @@ type DuplicatePrompt = {
   duplicate: StoreProduct;
   incoming: StoreProduct;
 };
+
+type LotFilePayload = Record<string, unknown>;
 
 const PRODUCT_TYPE_OPTIONS = [
   { value: "single_card", label: "Carta avulsa" },
@@ -391,6 +396,10 @@ function uniqueNumbers(...groups: number[][]): number[] {
   return [...values].sort((left, right) => right - left);
 }
 
+function isLotImportInProgress(status: string | null | undefined): boolean {
+  return status === "queued" || status === "running";
+}
+
 function resolveSlugCollisionForCreate(payload: StoreProduct, existingProducts: StoreProduct[]): string {
   const baseSlug = payload.slug.trim();
   if (!baseSlug) {
@@ -453,6 +462,18 @@ function App() {
   const [suggestedPrice, setSuggestedPrice] = useState<PriceSuggestion | null>(null);
   const [duplicatePrompt, setDuplicatePrompt] = useState<DuplicatePrompt | null>(null);
   const [duplicateActionLoading, setDuplicateActionLoading] = useState(false);
+  const [lotImportModalOpen, setLotImportModalOpen] = useState(false);
+  const [lotImportFileName, setLotImportFileName] = useState("");
+  const [lotImportPayload, setLotImportPayload] = useState<LotFilePayload | null>(null);
+  const [lotImportCondition, setLotImportCondition] = useState("Near Mint (NM)");
+  const [lotImportFinish, setLotImportFinish] = useState("Normal");
+  const [lotImportCategory, setLotImportCategory] = useState("Cartas avulsas");
+  const [lotImportUseAi, setLotImportUseAi] = useState(true);
+  const [lotImportBusy, setLotImportBusy] = useState(false);
+  const [lotImportError, setLotImportError] = useState<string | null>(null);
+  const [lotImportJob, setLotImportJob] = useState<LotImportJobResponse | null>(null);
+  const lotImportJobId = lotImportJob?.job_id ?? null;
+  const lotImportJobStatus = lotImportJob?.status ?? null;
 
   // TEST MODE (TEMPORARIO): auth desabilitada no admin frontend.
   // const connected = adminToken.trim().length > 0;
@@ -536,6 +557,65 @@ function App() {
       cancelled = true;
     };
   }, [adminToken, connected]);
+
+  useEffect(() => {
+    if (!connected || !lotImportJobId || !isLotImportInProgress(lotImportJobStatus)) {
+      return;
+    }
+
+    const activeJobId = lotImportJobId;
+    let cancelled = false;
+
+    async function pollJob() {
+      try {
+        const next = await fetchLotImportStatus(adminToken, activeJobId);
+        if (cancelled) {
+          return;
+        }
+
+        setLotImportJob(next);
+        if (isLotImportInProgress(next.status)) {
+          return;
+        }
+
+        setLotImportBusy(false);
+        if (next.status === "completed" || next.status === "completed_with_errors") {
+          setStatus(
+            `Importacao concluida: ${next.created_count} criados, ${next.updated_count} atualizados, ${next.error_count} com erro.`,
+          );
+          try {
+            const productsResponse = await fetchAdminProducts(adminToken);
+            if (!cancelled) {
+              setProducts(productsResponse);
+            }
+          } catch {
+            // Mantem o fluxo principal da importacao mesmo se o refresh falhar.
+          }
+          return;
+        }
+
+        if (next.status === "failed") {
+          setLotImportError(next.last_error ?? "Falha na importacao de lote.");
+        }
+      } catch (err: unknown) {
+        if (!cancelled) {
+          setLotImportError(
+            err instanceof Error ? err.message : "Falha ao consultar status da importacao.",
+          );
+        }
+      }
+    }
+
+    const intervalId = window.setInterval(() => {
+      void pollJob();
+    }, 1200);
+    void pollJob();
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [adminToken, connected, lotImportJobId, lotImportJobStatus]);
 
   useEffect(() => {
     setSelectedCategory("all");
@@ -936,6 +1016,7 @@ function App() {
       set_code: (item.set_code ?? item.set_id).toUpperCase(),
       set_series: item.set_series ?? current.set_series,
       rarity: item.rarity ?? current.rarity,
+      regulation_mark: item.regulation_mark ?? current.regulation_mark,
       finish: item.suggested_finish ?? current.finish,
       release_year: item.release_year ? String(item.release_year) : current.release_year,
       pokemon_generation: item.pokemon_generation ?? current.pokemon_generation,
@@ -988,6 +1069,66 @@ function App() {
     }
   }
 
+  async function onSelectLotFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) {
+      setLotImportFileName("");
+      setLotImportPayload(null);
+      return;
+    }
+
+    setLotImportError(null);
+    try {
+      const raw = await file.text();
+      const parsed = JSON.parse(raw) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Arquivo de lote invalido: JSON raiz deve ser um objeto.");
+      }
+
+      const cards = (parsed as { cards?: unknown }).cards;
+      if (!Array.isArray(cards)) {
+        throw new Error("Arquivo de lote invalido: campo 'cards' ausente ou invalido.");
+      }
+
+      setLotImportFileName(file.name);
+      setLotImportPayload(parsed as LotFilePayload);
+      setLotImportJob(null);
+    } catch (err: unknown) {
+      setLotImportPayload(null);
+      setLotImportError(err instanceof Error ? err.message : "Falha ao ler JSON do lote.");
+    }
+  }
+
+  async function startLotImportFlow() {
+    if (!connected) {
+      return;
+    }
+    if (!lotImportPayload) {
+      setLotImportError("Selecione um arquivo JSON de lote antes de iniciar.");
+      return;
+    }
+
+    setLotImportError(null);
+    setLotImportBusy(true);
+
+    try {
+      const started = await startLotImport(adminToken, {
+        lot_payload: lotImportPayload,
+        default_condition: lotImportCondition,
+        default_finish: lotImportFinish,
+        default_category: lotImportCategory,
+        infer_regulation_mark_with_openai: lotImportUseAi,
+      });
+
+      const snapshot = await fetchLotImportStatus(adminToken, started.job_id);
+      setLotImportJob(snapshot);
+      setStatus(`Importacao iniciada: ${started.total_cards} cards em fila.`);
+    } catch (err: unknown) {
+      setLotImportBusy(false);
+      setLotImportError(err instanceof Error ? err.message : "Falha ao iniciar importacao do lote.");
+    }
+  }
+
   return (
     <main className="admin-page">
       <header className="admin-header">
@@ -997,6 +1138,17 @@ function App() {
             Abas separadas para cards e produtos. Campos de set/raridade/condicao com opcoes e
             suporte para adicionar novos valores.
           </p>
+        </div>
+        <div className="admin-header-actions">
+          <button
+            type="button"
+            className="admin-lot-button"
+            onClick={() => {
+              setLotImportModalOpen(true);
+            }}
+          >
+            Enviar lote JSON
+          </button>
         </div>
       </header>
 
@@ -1048,6 +1200,167 @@ function App() {
                 {duplicateActionLoading ? "Salvando..." : "Adicionar +1 no estoque"}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {lotImportModalOpen && (
+        <div className="admin-modal-backdrop" role="dialog" aria-modal="true">
+          <div className="admin-modal lot-import-modal">
+            <div className="lot-import-header">
+              <h3>Importar lote de cartas</h3>
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => {
+                  setLotImportModalOpen(false);
+                }}
+              >
+                Fechar
+              </button>
+            </div>
+            <p>
+              Selecione o JSON do lote. O sistema vai buscar set, imagem e preco automaticamente e
+              preencher condicao como NM para este lote.
+            </p>
+
+            <div className="lot-import-config">
+              <label className="admin-field admin-field-full">
+                <span>Arquivo JSON do lote</span>
+                <input
+                  type="file"
+                  accept="application/json,.json"
+                  onChange={(event) => {
+                    void onSelectLotFile(event);
+                  }}
+                />
+                <small>{lotImportFileName || "Nenhum arquivo selecionado"}</small>
+              </label>
+
+              <label className="admin-field">
+                <span>Condicao padrao</span>
+                <select
+                  value={lotImportCondition}
+                  onChange={(event) => setLotImportCondition(event.target.value)}
+                >
+                  {conditionOptions.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="admin-field">
+                <span>Acabamento padrao</span>
+                <select
+                  value={lotImportFinish}
+                  onChange={(event) => setLotImportFinish(event.target.value)}
+                >
+                  {finishOptions.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="admin-field">
+                <span>Categoria padrao</span>
+                <input
+                  value={lotImportCategory}
+                  onChange={(event) => setLotImportCategory(event.target.value)}
+                  placeholder="Cartas avulsas"
+                />
+              </label>
+
+              <label className="admin-checkbox lot-import-checkbox">
+                <input
+                  type="checkbox"
+                  checked={lotImportUseAi}
+                  onChange={(event) => setLotImportUseAi(event.target.checked)}
+                />
+                usar IA para preencher regulation mark quando a API nao retornar
+              </label>
+            </div>
+
+            <div className="lot-import-actions">
+              <button
+                type="button"
+                disabled={!lotImportPayload || lotImportBusy}
+                onClick={() => {
+                  void startLotImportFlow();
+                }}
+              >
+                {lotImportBusy ? "Processando..." : "Iniciar processamento do lote"}
+              </button>
+            </div>
+
+            {lotImportError && <p className="admin-state error">{lotImportError}</p>}
+
+            {lotImportJob && (
+              <section className="lot-import-progress">
+                <div>
+                  <strong>Status:</strong> {lotImportJob.status}
+                </div>
+                <div>
+                  <strong>Cards:</strong> {lotImportJob.processed_cards}/{lotImportJob.total_cards}
+                </div>
+                <div>
+                  <strong>Preparados:</strong> {lotImportJob.prepared_cards}
+                </div>
+                <div>
+                  <strong>Criados:</strong> {lotImportJob.created_count}
+                </div>
+                <div>
+                  <strong>Atualizados:</strong> {lotImportJob.updated_count}
+                </div>
+                <div>
+                  <strong>Erros:</strong> {lotImportJob.error_count}
+                </div>
+              </section>
+            )}
+
+            {lotImportJob && lotImportJob.entries.length > 0 && (
+              <section className="lot-import-gallery">
+                {lotImportJob.entries.map((entry) => (
+                  <article key={`${entry.index}-${entry.slug}`} className="lot-import-card">
+                    <div className="lot-import-card-media">
+                      {entry.image_url ? (
+                        <img src={entry.image_url} alt={entry.name} loading="lazy" />
+                      ) : (
+                        <span>Sem imagem</span>
+                      )}
+                    </div>
+                    <div className="lot-import-card-content">
+                      <strong>{entry.name}</strong>
+                      <p>
+                        {entry.card_number} - {(entry.language || "PT").toUpperCase()}
+                      </p>
+                      <p>
+                        {(entry.regulation_mark ?? "-").toUpperCase()} -{" "}
+                        {(entry.set_code ?? "---").toUpperCase()}
+                      </p>
+                      <p>
+                        {entry.set_name ?? "Set pendente"}
+                        {entry.release_year ? ` - ${entry.release_year}` : ""}
+                      </p>
+                      <p>
+                        {entry.finish ?? "Sem acabamento"} - {entry.condition ?? "Sem condicao"}
+                      </p>
+                      <p>
+                        Qtd: {entry.quantity} - {formatCurrency(entry.price_brl || 0)}
+                      </p>
+                      <p className={`lot-import-status status-${entry.status}`}>
+                        {entry.status}
+                        {entry.action ? ` (${entry.action})` : ""}
+                      </p>
+                      {entry.message && <p className="lot-import-message">{entry.message}</p>}
+                    </div>
+                  </article>
+                ))}
+              </section>
+            )}
           </div>
         </div>
       )}
@@ -1123,6 +1436,7 @@ function App() {
                               {item.rarity ?? "Sem raridade"}
                               {item.release_year ? ` - ${item.release_year}` : ""}
                             </p>
+                            {item.regulation_mark && <p>Marcador: {item.regulation_mark}</p>}
                             {item.suggested_finish && <p>Acabamento: {item.suggested_finish}</p>}
                             {(item.suggested_price_brl != null || item.suggested_price_usd != null) && (
                               <p className="lookup-price-hint">

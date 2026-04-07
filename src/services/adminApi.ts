@@ -2,6 +2,9 @@ import type {
   AnalyticsSummaryResponse,
   CardLookupResponse,
   CardMetadataOptionsResponse,
+  LotImportJobResponse,
+  LotImportStartRequest,
+  LotImportStartResponse,
   StoreDeleteResponse,
   StoreProduct,
   StoreProductListResponse,
@@ -117,4 +120,36 @@ export async function fetchCardLookup(
   }
 
   return (await response.json()) as CardLookupResponse;
+}
+
+export async function startLotImport(
+  token: string,
+  payload: LotImportStartRequest,
+): Promise<LotImportStartResponse> {
+  const response = await fetch(`${API_URL}/api/v1/admin/lots/import/start`, {
+    method: "POST",
+    headers: adminHeaders(token),
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Falha ao iniciar importacao de lote (${response.status})`);
+  }
+
+  return (await response.json()) as LotImportStartResponse;
+}
+
+export async function fetchLotImportStatus(
+  token: string,
+  jobId: string,
+): Promise<LotImportJobResponse> {
+  const response = await fetch(`${API_URL}/api/v1/admin/lots/import/${jobId}`, {
+    headers: adminHeaders(token),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Falha ao consultar importacao de lote (${response.status})`);
+  }
+
+  return (await response.json()) as LotImportJobResponse;
 }
