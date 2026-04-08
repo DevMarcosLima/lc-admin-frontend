@@ -66,14 +66,44 @@ h3 {
 
 .admin-auth {
   margin-top: 1rem;
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  gap: 0.5rem;
-  align-items: center;
+  display: block;
   border: 1px solid var(--admin-line);
   border-radius: 14px;
   background: #fff;
   padding: 0.7rem;
+}
+
+.admin-auth-form {
+  display: grid;
+  gap: 0.5rem;
+  max-width: 420px;
+}
+
+.admin-auth-form label {
+  font-size: 0.86rem;
+  color: #4f6280;
+}
+
+.admin-auth-form-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.admin-auth-form-actions .ghost {
+  background: #d7e8ff;
+  color: #274066;
+}
+
+.admin-auth-connected {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.admin-auth-connected p {
+  margin: 0;
+  color: #4f6280;
 }
 
 .admin-auth input,
@@ -109,6 +139,11 @@ h3 {
   font-weight: 700;
   padding: 0.45rem 0.72rem;
   cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
 }
 
 .admin-state {
@@ -727,6 +762,11 @@ h3 {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+img.is-broken-image {
+  opacity: 0.2;
+  filter: grayscale(1);
 }
 
 .lot-import-card-media span {

@@ -2,6 +2,7 @@ export type StoreProduct = {
   slug: string;
   name: string;
   product_type: string;
+  lot_id?: string | null;
   set_name?: string | null;
   set_series?: string | null;
   rarity?: string | null;
@@ -105,6 +106,7 @@ export type LotImportEntryPreview = {
   status: string;
   action?: string | null;
   message?: string | null;
+  lot_id?: string | null;
   slug: string;
   name: string;
   card_number: string;

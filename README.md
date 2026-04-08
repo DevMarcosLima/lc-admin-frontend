@@ -17,4 +17,5 @@ npm run dev
 ## Required
 
 - Backend admin API running em http://localhost:8001
-- Header token `X-Admin-Token` configured in backend
+- Login admin via e-mail/senha
+- Se `ADMIN_AUTH_2FA_ENABLED=true`, informar codigo do Google Authenticator

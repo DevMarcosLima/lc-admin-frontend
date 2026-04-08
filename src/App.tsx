@@ -1,15 +1,19 @@
-import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, SyntheticEvent, useEffect, useMemo, useState } from "react";
 
 import {
+  AdminApiError,
   createAdminProduct,
   deleteAdminProduct,
   fetchAdminAnalyticsSummary,
+  fetchAdminMe,
   fetchLotImportStatus,
   fetchAdminProducts,
   fetchCardLookup,
   fetchCardMetadataOptions,
+  loginAdmin,
   startLotImport,
   updateAdminProduct,
+  verifyAdminTwoFactor,
 } from "./services/adminApi";
 import type {
   AnalyticsSummaryItem,
@@ -19,8 +23,8 @@ import type {
   StoreProduct,
 } from "./types/store";
 
-const TOKEN_STORAGE_KEY = "legacy_cards_admin_token";
-const DEFAULT_ADMIN_TOKEN = (import.meta.env.VITE_ADMIN_TOKEN ?? "").trim();
+const AUTH_STORAGE_KEY = "legacy_cards_admin_access_token";
+const DEFAULT_ADMIN_EMAIL = (import.meta.env.VITE_ADMIN_EMAIL ?? "marcos_dev@icloud.com").trim();
 
 type AdminTab = "cards" | "products";
 
@@ -28,6 +32,7 @@ type ProductDraft = {
   slug: string;
   name: string;
   product_type: string;
+  lot_id: string;
   category: string;
   stock: string;
   price_brl: string;
@@ -146,6 +151,7 @@ function emptyDraft(tab: AdminTab): ProductDraft {
       slug: "",
       name: "",
       product_type: "single_card",
+      lot_id: "",
       category: "Cartas avulsas",
       stock: "1",
       price_brl: "0,00",
@@ -173,6 +179,7 @@ function emptyDraft(tab: AdminTab): ProductDraft {
     slug: "",
     name: "",
     product_type: "booster",
+    lot_id: "",
     category: "Booster",
     stock: "1",
     price_brl: "0,00",
@@ -201,6 +208,7 @@ function toDraft(product: StoreProduct): ProductDraft {
     slug: product.slug,
     name: product.name,
     product_type: product.product_type,
+    lot_id: product.lot_id ?? "",
     category: normalizeCategory(product.category),
     stock: String(product.stock),
     price_brl: formatBrlFromNumber(product.price_brl),
@@ -290,6 +298,7 @@ function toProduct(draft: ProductDraft): StoreProduct {
     slug: draft.slug.trim(),
     name: draft.name.trim(),
     product_type: draft.product_type.trim(),
+    lot_id: draft.lot_id.trim() || null,
     category: normalizeCategory(draft.category),
     stock: Number(draft.stock || "0"),
     price_brl: parseBrlToNumber(draft.price_brl),
@@ -356,6 +365,7 @@ function normalizedIdentity(value: string | null | undefined): string {
 
 function cardIdentityKey(product: StoreProduct): string {
   return [
+    normalizedIdentity(product.lot_id),
     normalizedIdentity(product.name),
     normalizedIdentity(product.card_number),
     normalizedIdentity(product.set_name),
@@ -400,6 +410,21 @@ function isLotImportInProgress(status: string | null | undefined): boolean {
   return status === "queued" || status === "running";
 }
 
+function logImageLoadError(
+  event: SyntheticEvent<HTMLImageElement>,
+  context: string,
+  imageUrl: string | null | undefined,
+  itemName: string | null | undefined,
+): void {
+  console.error("[legacy-admin][image] Falha ao carregar imagem", {
+    context,
+    itemName: itemName ?? null,
+    imageUrl: imageUrl ?? null,
+  });
+
+  event.currentTarget.classList.add("is-broken-image");
+}
+
 function resolveSlugCollisionForCreate(payload: StoreProduct, existingProducts: StoreProduct[]): string {
   const baseSlug = payload.slug.trim();
   if (!baseSlug) {
@@ -437,12 +462,15 @@ function resolveSlugCollisionForCreate(payload: StoreProduct, existingProducts: 
 }
 
 function App() {
-  const [tokenInput, setTokenInput] = useState(
-    () => localStorage.getItem(TOKEN_STORAGE_KEY) ?? DEFAULT_ADMIN_TOKEN,
-  );
-  const [adminToken, setAdminToken] = useState(
-    () => localStorage.getItem(TOKEN_STORAGE_KEY) ?? DEFAULT_ADMIN_TOKEN,
-  );
+  const [adminToken, setAdminToken] = useState(() => localStorage.getItem(AUTH_STORAGE_KEY) ?? "");
+  const [adminEmail, setAdminEmail] = useState(DEFAULT_ADMIN_EMAIL);
+  const [adminPassword, setAdminPassword] = useState("");
+  const [twoFactorCode, setTwoFactorCode] = useState("");
+  const [twoFactorChallenge, setTwoFactorChallenge] = useState<string | null>(null);
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [loggedEmail, setLoggedEmail] = useState<string | null>(null);
+  const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
   const [products, setProducts] = useState<StoreProduct[]>([]);
   const [analytics, setAnalytics] = useState<AnalyticsSummaryItem[]>([]);
   const [cardOptions, setCardOptions] = useState<CardMetadataOptionsResponse | null>(null);
@@ -475,9 +503,22 @@ function App() {
   const lotImportJobId = lotImportJob?.job_id ?? null;
   const lotImportJobStatus = lotImportJob?.status ?? null;
 
-  // TEST MODE (TEMPORARIO): auth desabilitada no admin frontend.
-  // const connected = adminToken.trim().length > 0;
-  const connected = true;
+  const connected = adminToken.trim().length > 0;
+
+  function disconnectSession(reason?: string): void {
+    localStorage.removeItem(AUTH_STORAGE_KEY);
+    setAdminToken("");
+    setLoggedEmail(null);
+    setTwoFactorEnabled(false);
+    setTwoFactorChallenge(null);
+    setTwoFactorCode("");
+    setAdminPassword("");
+    setProducts([]);
+    setAnalytics([]);
+    if (reason) {
+      setAuthError(reason);
+    }
+  }
 
   useEffect(() => {
     if (!connected) {
@@ -498,6 +539,12 @@ function App() {
 
       try {
         const warnings: string[] = [];
+        const me = await fetchAdminMe(adminToken);
+        if (cancelled) {
+          return;
+        }
+        setLoggedEmail(me.email);
+        setTwoFactorEnabled(me.two_factor_enabled);
 
         const productsResponse = await fetchAdminProducts(adminToken);
         if (cancelled) {
@@ -542,7 +589,11 @@ function App() {
         }
       } catch (err: unknown) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Falha ao carregar painel admin");
+          if (err instanceof AdminApiError && err.status === 401) {
+            disconnectSession("Sua sessao expirou. Faca login novamente.");
+          } else {
+            setError(err instanceof Error ? err.message : "Falha ao carregar painel admin");
+          }
         }
       } finally {
         if (!cancelled) {
@@ -681,6 +732,7 @@ function App() {
       const searchable = [
         product.slug,
         product.name,
+        product.lot_id ?? "",
         product.product_type,
         productCategory,
         product.set_name ?? "",
@@ -825,15 +877,67 @@ function App() {
     [draft.image_gallery, draft.image_url],
   );
 
-  function connectToken() {
-    const sanitized = tokenInput.trim();
-    setAdminToken(sanitized);
-    if (!sanitized) {
-      localStorage.removeItem(TOKEN_STORAGE_KEY);
+  async function submitLogin(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    setAuthError(null);
+    setError(null);
+    setStatus(null);
+    setAuthLoading(true);
+
+    try {
+      const response = await loginAdmin(adminEmail.trim(), adminPassword);
+      if (response.requires_2fa) {
+        setTwoFactorChallenge(response.challenge_token);
+        setStatus("Senha validada. Digite o codigo do Google Authenticator.");
+        return;
+      }
+
+      if (!response.access_token) {
+        setAuthError("Falha ao autenticar.");
+        return;
+      }
+
+      localStorage.setItem(AUTH_STORAGE_KEY, response.access_token);
+      setAdminToken(response.access_token);
+      setTwoFactorChallenge(null);
+      setTwoFactorCode("");
+      setAdminPassword("");
+      setStatus("Login realizado com sucesso.");
+    } catch (err: unknown) {
+      setAuthError(err instanceof Error ? err.message : "Falha ao autenticar.");
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  async function submitTwoFactor(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (!twoFactorChallenge) {
+      setAuthError("Fluxo 2FA invalido. Tente o login novamente.");
       return;
     }
 
-    localStorage.setItem(TOKEN_STORAGE_KEY, sanitized);
+    setAuthError(null);
+    setAuthLoading(true);
+
+    try {
+      const response = await verifyAdminTwoFactor(twoFactorChallenge, twoFactorCode.trim());
+      if (!response.access_token) {
+        setAuthError("Sessao 2FA invalida.");
+        return;
+      }
+
+      localStorage.setItem(AUTH_STORAGE_KEY, response.access_token);
+      setAdminToken(response.access_token);
+      setTwoFactorChallenge(null);
+      setTwoFactorCode("");
+      setAdminPassword("");
+      setStatus("2FA validado. Sessao admin iniciada.");
+    } catch (err: unknown) {
+      setAuthError(err instanceof Error ? err.message : "Codigo 2FA invalido.");
+    } finally {
+      setAuthLoading(false);
+    }
   }
 
   function resetForm() {
@@ -1143,6 +1247,7 @@ function App() {
           <button
             type="button"
             className="admin-lot-button"
+            disabled={!connected}
             onClick={() => {
               setLotImportModalOpen(true);
             }}
@@ -1153,21 +1258,87 @@ function App() {
       </header>
 
       <section className="admin-auth">
-        <label htmlFor="admin-token">Admin Token</label>
-        <input
-          id="admin-token"
-          type="password"
-          value={tokenInput}
-          onChange={(event) => {
-            setTokenInput(event.target.value);
-          }}
-          placeholder="X-Admin-Token"
-        />
-        <button type="button" onClick={connectToken}>
-          Conectar
-        </button>
+        {connected ? (
+          <div className="admin-auth-connected">
+            <div>
+              <strong>{loggedEmail ?? "Sessao ativa"}</strong>
+              <p>2FA: {twoFactorEnabled ? "ativo" : "desativado"}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                disconnectSession("Sessao encerrada.");
+              }}
+            >
+              Sair
+            </button>
+          </div>
+        ) : twoFactorChallenge ? (
+          <form className="admin-auth-form" onSubmit={(event) => void submitTwoFactor(event)}>
+            <label htmlFor="admin-2fa">Codigo Google Authenticator</label>
+            <input
+              id="admin-2fa"
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]{6}"
+              maxLength={6}
+              value={twoFactorCode}
+              onChange={(event) => {
+                setTwoFactorCode(event.target.value.replace(/\D/g, "").slice(0, 6));
+              }}
+              placeholder="000000"
+              required
+            />
+            <div className="admin-auth-form-actions">
+              <button type="submit" disabled={authLoading || twoFactorCode.length < 6}>
+                {authLoading ? "Validando..." : "Validar 2FA"}
+              </button>
+              <button
+                type="button"
+                className="ghost"
+                disabled={authLoading}
+                onClick={() => {
+                  setTwoFactorChallenge(null);
+                  setTwoFactorCode("");
+                }}
+              >
+                Voltar
+              </button>
+            </div>
+          </form>
+        ) : (
+          <form className="admin-auth-form" onSubmit={(event) => void submitLogin(event)}>
+            <label htmlFor="admin-email">E-mail admin</label>
+            <input
+              id="admin-email"
+              type="email"
+              value={adminEmail}
+              onChange={(event) => {
+                setAdminEmail(event.target.value);
+              }}
+              placeholder="admin@empresa.com"
+              required
+            />
+            <label htmlFor="admin-password">Senha</label>
+            <input
+              id="admin-password"
+              type="password"
+              value={adminPassword}
+              onChange={(event) => {
+                setAdminPassword(event.target.value);
+              }}
+              placeholder="Sua senha admin"
+              required
+              minLength={8}
+            />
+            <button type="submit" disabled={authLoading || adminPassword.trim().length < 8}>
+              {authLoading ? "Entrando..." : "Entrar"}
+            </button>
+          </form>
+        )}
       </section>
 
+      {authError && <p className="admin-state error">{authError}</p>}
       {error && <p className="admin-state error">{error}</p>}
       {status && <p className="admin-state ok">{status}</p>}
       {metadataWarning && <p className="admin-state warning">{metadataWarning}</p>}
@@ -1179,6 +1350,9 @@ function App() {
             <p>
               Ja existe uma carta igual ({duplicatePrompt.duplicate.name}) com mesma raridade e
               condicao.
+            </p>
+            <p>
+              Lote atual: {duplicatePrompt.duplicate.lot_id ?? "sem lote"}.
             </p>
             <p>Deseja adicionar +1 no estoque desse item existente?</p>
             <div className="admin-modal-actions">
@@ -1327,7 +1501,14 @@ function App() {
                   <article key={`${entry.index}-${entry.slug}`} className="lot-import-card">
                     <div className="lot-import-card-media">
                       {entry.image_url ? (
-                        <img src={entry.image_url} alt={entry.name} loading="lazy" />
+                        <img
+                          src={entry.image_url}
+                          alt={entry.name}
+                          loading="lazy"
+                          onError={(event) => {
+                            logImageLoadError(event, "lot-import-gallery", entry.image_url, entry.name);
+                          }}
+                        />
                       ) : (
                         <span>Sem imagem</span>
                       )}
@@ -1337,6 +1518,7 @@ function App() {
                       <p>
                         {entry.card_number} - {(entry.language || "PT").toUpperCase()}
                       </p>
+                      <p>Lote: {entry.lot_id ?? "-"}</p>
                       <p>
                         {(entry.regulation_mark ?? "-").toUpperCase()} -{" "}
                         {(entry.set_code ?? "---").toUpperCase()}
@@ -1422,7 +1604,14 @@ function App() {
                         <article key={item.card_id} className="lookup-card">
                           <div className="lookup-card-media">
                             {item.image_small ? (
-                              <img src={item.image_small} alt={item.name} loading="lazy" />
+                              <img
+                                src={item.image_small}
+                                alt={item.name}
+                                loading="lazy"
+                                onError={(event) => {
+                                  logImageLoadError(event, "card-lookup", item.image_small, item.name);
+                                }}
+                              />
                             ) : (
                               <span>Sem imagem</span>
                             )}
@@ -1509,6 +1698,17 @@ function App() {
                     placeholder="categoria"
                     onChange={(event) =>
                       setDraft((current) => ({ ...current, category: event.target.value }))
+                    }
+                  />
+                </label>
+
+                <label className="admin-field">
+                  <span>Lote ID</span>
+                  <input
+                    value={draft.lot_id}
+                    placeholder="ex: lote1"
+                    onChange={(event) =>
+                      setDraft((current) => ({ ...current, lot_id: event.target.value }))
                     }
                   />
                 </label>
@@ -1789,7 +1989,14 @@ function App() {
               <div className="admin-image-preview">
                 <p>Preview da foto</p>
                 {draft.image_url ? (
-                  <img src={draft.image_url} alt={draft.name || "preview do produto"} loading="lazy" />
+                  <img
+                    src={draft.image_url}
+                    alt={draft.name || "preview do produto"}
+                    loading="lazy"
+                    onError={(event) => {
+                      logImageLoadError(event, "form-preview-main", draft.image_url, draft.name);
+                    }}
+                  />
                 ) : (
                   <span>Adicione uma URL para visualizar a foto.</span>
                 )}
@@ -1803,6 +2010,9 @@ function App() {
                           src={imageUrl}
                           alt={draft.name || "foto adicional"}
                           loading="lazy"
+                          onError={(event) => {
+                            logImageLoadError(event, "form-preview-gallery", imageUrl, draft.name);
+                          }}
                         />
                       ))}
                     </div>
@@ -1936,7 +2146,19 @@ function App() {
                         <article key={product.slug} className="admin-product-card">
                           <div className="admin-product-media">
                             {product.image_url ? (
-                              <img src={product.image_url} alt={product.name} loading="lazy" />
+                              <img
+                                src={product.image_url}
+                                alt={product.name}
+                                loading="lazy"
+                                onError={(event) => {
+                                  logImageLoadError(
+                                    event,
+                                    "catalog-product-card",
+                                    product.image_url,
+                                    product.name,
+                                  );
+                                }}
+                              />
                             ) : (
                               <span className="admin-image-fallback">Sem foto</span>
                             )}
@@ -1944,6 +2166,7 @@ function App() {
                           <div className="admin-product-content">
                             <strong>{product.name}</strong>
                             <p className="admin-product-slug">{product.slug}</p>
+                            <p>Lote: {product.lot_id ?? "-"}</p>
                             <p>{product.product_type}</p>
                             {isCardType(product.product_type) ? (
                               <>
