@@ -10,7 +10,22 @@ import type {
   StoreProductListResponse,
 } from "../types/store";
 
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8001";
+const PROD_ADMIN_API_URL = "https://lc-admin-backend-939310514848.southamerica-east1.run.app";
+
+function resolveDefaultApiUrl(): string {
+  if (typeof window === "undefined") {
+    return "http://localhost:8001";
+  }
+
+  const host = window.location.hostname.toLowerCase();
+  if (host === "localhost" || host === "127.0.0.1" || host === "::1") {
+    return "http://localhost:8001";
+  }
+
+  return PROD_ADMIN_API_URL;
+}
+
+const API_URL = (import.meta.env.VITE_API_URL ?? resolveDefaultApiUrl()).trim();
 
 export type AdminLoginResponse = {
   requires_2fa: boolean;
@@ -241,4 +256,3 @@ export async function fetchLotImportStatus(
 
   return (await response.json()) as LotImportJobResponse;
 }
-

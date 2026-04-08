@@ -2,7 +2,7 @@ FROM node:22-alpine AS build
 
 WORKDIR /app
 
-ARG VITE_API_URL=http://localhost:8001
+ARG VITE_API_URL=https://lc-admin-backend-939310514848.southamerica-east1.run.app
 ARG VITE_ADMIN_EMAIL=admin@legacycards.local
 ENV VITE_API_URL=${VITE_API_URL}
 ENV VITE_ADMIN_EMAIL=${VITE_ADMIN_EMAIL}
