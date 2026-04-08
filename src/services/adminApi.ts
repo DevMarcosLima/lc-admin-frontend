@@ -9,23 +9,28 @@ import type {
   StoreProduct,
   StoreProductListResponse,
 } from "../types/store";
+import { readRuntimeEnv } from "./runtimeConfig";
 
-const PROD_ADMIN_API_URL = "https://lc-admin-backend-939310514848.southamerica-east1.run.app";
-
-function resolveDefaultApiUrl(): string {
-  if (typeof window === "undefined") {
-    return "http://localhost:8001";
-  }
-
-  const host = window.location.hostname.toLowerCase();
-  if (host === "localhost" || host === "127.0.0.1" || host === "::1") {
-    return "http://localhost:8001";
-  }
-
-  return PROD_ADMIN_API_URL;
+function isLocalHost(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
 }
 
-const API_URL = (import.meta.env.VITE_API_URL ?? resolveDefaultApiUrl()).trim();
+function resolveApiUrl(): string {
+  const configuredUrl = readRuntimeEnv("VITE_API_URL");
+  if (configuredUrl) {
+    return configuredUrl;
+  }
+
+  if (typeof window !== "undefined" && isLocalHost(window.location.hostname.toLowerCase())) {
+    return "http://localhost:8001";
+  }
+
+  throw new Error(
+    "VITE_API_URL nao configurado para ambiente remoto. Defina a URL da API no build do admin frontend.",
+  );
+}
+
+const API_URL = resolveApiUrl();
 
 export type AdminLoginResponse = {
   requires_2fa: boolean;

@@ -15,6 +15,7 @@ import {
   updateAdminProduct,
   verifyAdminTwoFactor,
 } from "./services/adminApi";
+import { readRuntimeEnv } from "./services/runtimeConfig";
 import type {
   AnalyticsSummaryItem,
   CardLookupItem,
@@ -24,7 +25,7 @@ import type {
 } from "./types/store";
 
 const AUTH_STORAGE_KEY = "legacy_cards_admin_access_token";
-const DEFAULT_ADMIN_EMAIL = (import.meta.env.VITE_ADMIN_EMAIL ?? "marcos_dev@icloud.com").trim();
+const DEFAULT_ADMIN_EMAIL = readRuntimeEnv("VITE_ADMIN_EMAIL") || "marcos_dev@icloud.com";
 
 type AdminTab = "cards" | "products";
 
